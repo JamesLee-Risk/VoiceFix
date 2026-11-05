@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voicefix"
+version = "0.1.0"
+description = "Guided clean-up of voice-work and vocal recordings"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-or-later"}
+readme = "README.md"
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Editors",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "soundfile>=0.12",
+    "soxr>=0.3",
+    "sounddevice>=0.4",
+    "PySide6>=6.5",
+    "pyqtgraph>=0.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov>=4", "pyloudnorm>=0.1"]
+# AI noise reduction (about 1 GB with PyTorch); the app works without it
+ai = ["deepfilternet>=0.5.6", "torch>=2.0", "torchaudio>=2.0"]
+
+[project.gui-scripts]
+voicefix = "voicefix.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["voicefix*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: long-running integration tests"]
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
