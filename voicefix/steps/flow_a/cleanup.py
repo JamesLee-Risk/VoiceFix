@@ -174,6 +174,9 @@ class Denoise(Step):
     def measure(self, audio: np.ndarray, sr: int, ctx: StepContext) -> Optional[Region]:
         return self._noise_region(audio, sr, ctx)
 
+    def measure_fingerprint(self, ctx: StepContext) -> Any:
+        return ctx.noise_sample.to_json() if ctx.noise_sample else None
+
     def analyze(self, audio: np.ndarray, sr: int, ctx: StepContext) -> Analysis:
         region = self._noise_region(audio, sr, ctx)
         if region is None:

@@ -94,7 +94,7 @@ def test_b12_hits_vocal_target_and_ceiling(session):
 
 def test_export_with_mix_and_untouched_accompaniment(session, tmp_path: Path):
     project, chain = session
-    project = apply_defaults(project, chain)
+    project = apply_defaults(project, chain).skip_step(index_of(chain, "B11"))
     t = np.arange(len(chain.source)) / SR
     backing = np.stack([0.2 * np.sin(2 * np.pi * 110 * t)] * 2, axis=1).astype(np.float32)
     written = export(chain, project, ExportRequest(tmp_path / "song", "wav24", dry=True, mix=True), backing=backing)
@@ -123,14 +123,12 @@ def test_mix_export_without_backing_is_rejected(session, tmp_path: Path):
 
 def test_dry_export_leaves_out_wet_effects(session, tmp_path: Path):
     project, chain = session
-    project = apply_defaults(project, chain)
-    b8 = index_of(chain, "B8")
-    chain.steps[b8].wet_effect = True  # stand-in for B11 (space), which arrives in v1
+    project = apply_defaults(project, chain)  # includes B11 (space)
     written = export(chain, project, ExportRequest(tmp_path / "song", "wav24", dry=True))
     assert sorted(p.name for p in written) == ["song.wav", "song_dry.wav"]
     dry, _ = sf.read(tmp_path / "song_dry.wav", dtype="float32", always_2d=True)
-    without_b8 = chain.render(project.skip_step(b8), len(chain.steps) - 1)
-    assert np.max(np.abs(dry - np.clip(without_b8, -1, 1))) < 2.0**-22
+    without_space = chain.render(project.skip_step(index_of(chain, "B11")), len(chain.steps) - 1)
+    assert np.max(np.abs(dry - np.clip(without_space, -1, 1))) < 2.0**-22
 
 
 def test_streamed_resample_matches_whole_file(tmp_path: Path):

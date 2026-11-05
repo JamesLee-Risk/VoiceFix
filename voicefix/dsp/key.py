@@ -13,6 +13,26 @@ CHROMA_RANGE_HZ = (55.0, 2000.0)
 KEYS = tuple(f"{n} 大調" for n in NOTE_NAMES) + tuple(f"{n} 小調" for n in NOTE_NAMES)
 
 
+CHROMATIC = "chromatic"
+MAJOR_STEPS = (0, 2, 4, 5, 7, 9, 11)
+MINOR_STEPS = (0, 2, 3, 5, 7, 8, 10, 11)  # natural minor plus the raised 7th of harmonic minor
+
+
+def scale_pitch_classes(key: str) -> tuple[int, ...]:
+    """Pitch classes (C = 0) of a key name from KEYS, or all twelve for CHROMATIC."""
+    if key == CHROMATIC or key not in KEYS:
+        return tuple(range(12))
+    name, mode = key.split(" ")
+    tonic = NOTE_NAMES.index(name)
+    steps = MAJOR_STEPS if mode == "大調" else MINOR_STEPS
+    return tuple(sorted((tonic + s) % 12 for s in steps))
+
+
+def note_name(cents: float) -> str:
+    midi = int(round(cents / 100.0))
+    return f"{NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+
+
 def chroma(audio: np.ndarray, sr: int) -> np.ndarray:
     freqs, power = spectrum_excerpts(audio, sr, nperseg=16384, excerpts=12)
     keep = (freqs >= CHROMA_RANGE_HZ[0]) & (freqs <= CHROMA_RANGE_HZ[1])

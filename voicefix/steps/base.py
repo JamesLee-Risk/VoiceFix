@@ -122,6 +122,11 @@ class Step(ABC):
         """Parameter-independent whole-input measurement; memoized by the chain."""
         return None
 
+    def measure_fingerprint(self, ctx: StepContext) -> Any:
+        """The parts of ``ctx`` that measure() reads (memo key). Most steps read none,
+        so ticking an event or drawing a selection never repeats a long measurement."""
+        return None
+
     def prepare(
         self, audio: np.ndarray, sr: int, params: Params, ctx: StepContext, span: Optional[Region], measured: Any
     ) -> Any:
@@ -173,7 +178,17 @@ class EventStep(Step):
         """Name shown for one event; combined steps override this."""
         return self.event_label
 
-    def detect_events(self, audio: np.ndarray, sr: int, params: Params, span: Optional[Region] = None) -> list[Event]:
+    def detect_events(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        params: Params,
+        span: Optional[Region] = None,
+        measured: Any = None,
+        ctx: Optional[StepContext] = None,
+    ) -> list[Event]:
+        """Events in ``span`` (or the whole input). ``measured`` and ``ctx`` are for
+        detectors that work from a whole-input measurement instead of chunks."""
         regions = detect_chunked(
             audio, sr, lambda c, off: self.detect(c, sr, params, off), span=span, pad_seconds=self.detect_pad_seconds
         )
@@ -182,7 +197,7 @@ class EventStep(Step):
     def prepare(
         self, audio: np.ndarray, sr: int, params: Params, ctx: StepContext, span: Optional[Region], measured: Any
     ) -> Any:
-        events = [e.region for e in self.detect_events(audio, sr, params, span)]
+        events = [e.region for e in self.detect_events(audio, sr, params, span, measured, ctx)]
         return [
             r
             for r in events

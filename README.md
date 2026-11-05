@@ -34,10 +34,11 @@ python -m venv .venv
 | 共通：三種套用範圍、事件清單逐筆勾選、保護區段、邊界 8 ms 淡入淡出 | 完成 |
 | 共通：只算試聽範圍的預覽、背景整檔算圖（可取消）、步驟輸出快取 | 完成 |
 | 流程 A MVP 步驟：A0、A1、A2、A3、A4、A5、A6、A8、A10、A11 | 完成 |
-| 流程 A v1 步驟：A7 呼吸聲、A9 補底噪 | 未開始 |
+| 流程 A v1 步驟：A7 呼吸聲（預設 −3 dB）、A9 補底噪（用錄音自己的背景聲） | 完成 |
 | 流程 B MVP 步驟：B0、B2、B3、B4、B5、B8、B9、B10、B12 | 完成 |
-| 流程 B：伴奏一起播（B8～B12 預設勾選）、乾聲／混合試聽版匯出 | 完成 |
-| 流程 B v1／v2 步驟：B6 音準、B11 空間感、B1 選段拼接、B7 節奏對齊 | 未開始 |
+| 流程 B：伴奏一起播（B8～B12 預設勾選）、乾聲（不含 B11）／混合試聽版匯出 | 完成 |
+| 流程 B v1 步驟：B6 音準修正（自然／明顯效果）、B11 空間感 | 完成 |
+| 流程 B v2 步驟：B1 選段拼接、B7 節奏對齊 | 暫緩（需要多 take 匯入，見待決事項） |
 | 介面多語系（英文、日文） | 未開始；字串目前直接寫在程式中 |
 
 ## 架構
@@ -45,7 +46,7 @@ python -m venv .venv
 ```
 voicefix/
   core/      專案模型、步驟鏈（快取、需重算判斷）、分塊處理、區段遮罩、時間軸對應、響度、匯出
-  dsp/       濾波器、頻譜閘降噪、口水音／爆破音偵測修補、限制器（皆為自寫，未使用 GPL 套件）
+  dsp/       濾波器、降噪、口水音／爆破音、換氣、齒音、壓縮、限制器、音高偵測與移調
   steps/     每個步驟實作同一個 Step 介面：analyze / map_strength / measure / prepare / process
   playback/  A/B 試聽混音器（純邏輯、可測試）與音效卡輸出
   ui/        PySide6 介面：步驟清單、波形與頻譜、控制欄、試聽列
@@ -63,14 +64,15 @@ voicefix/
 
 - A10「安靜／標準」目標響度暫定 −24／−18 LUFS（`voicefix/steps/flow_a/level_export.py` 的 `LOUDNESS_PRESETS`），需量測已上架作品後決定。
 - B12「交給混音師／自己使用」目標響度暫定 −20／−16 LUFS（`voicefix/steps/flow_b/song.py` 的 `VOCAL_LOUDNESS_PRESETS`）。
-- 流程 B 目前只支援單一主唱檔（多 take 匯入尚未決定）。
+- 多 take 匯入（B1 選段拼接、B7 節奏對齊需要）：暫緩，待決定如何簡單呈現後再做。目前流程 B 只支援單一主唱檔。
+- B6 自然模式的修正門檻為偏離 30 音分（PRD 的初始建議值，待測試調整；可在「進階」修改）。
 - B8 只自動處理 1.5～6 kHz 的明顯窄共振；中低頻的「混濁」無法從長期頻譜和歌手的基頻區分，所以交給風格預設處理。
 - 降噪品質仍是最大技術風險：AI 降噪（DeepFilterNet）以語音訓練，對耳語、舔耳等表演音與歌聲的效果需實測。
 
 ## 授權
 
 VoiceFix 是自由軟體，以 **GNU General Public License v3.0 或更新版本（GPL-3.0-or-later）** 釋出，全文見 [LICENSE](LICENSE)。
-選擇 GPL 是為了能使用只允許開源軟體使用的套件（例如之後做 B6 音準修正與 B11 空間感時要用的 pedalboard／Rubber Band）。
+選擇 GPL 是為了能使用只允許開源軟體使用的套件：B6 音準修正用的 Rubber Band 與 B11 空間感用的殘響都來自 pedalboard（GPL-3.0）。
 
 使用的第三方套件：
 
@@ -81,9 +83,11 @@ VoiceFix 是自由軟體，以 **GNU General Public License v3.0 或更新版本
 | numpy、scipy | 數值運算、濾波、FFT | BSD-3-Clause | 必要 |
 | soundfile（libsndfile） | 讀寫音檔 | BSD-3-Clause（libsndfile 為 LGPL-2.1+） | 必要 |
 | soxr（libsoxr） | 伴奏重取樣 | LGPL-2.1+ | 必要 |
+| pedalboard（含 Rubber Band、JUCE） | B6 自然模式移調（保留共振峰）、B11 殘響 | GPL-3.0 | 必要 |
+| pyworld（WORLD） | B6 音高偵測 | MIT（WORLD 為 modified BSD） | 必要 |
 | sounddevice（PortAudio） | 播放 | MIT | 必要 |
 | DeepFilterNet、PyTorch | AI 降噪（選用） | MIT／Apache-2.0、BSD-3-Clause | `pip install -e ".[ai]"` |
 | pytest、pytest-cov、pyloudnorm | 測試（pyloudnorm 只用來驗證響度量測） | MIT | `pip install -e ".[dev]"` |
 
-降噪、口水音／噴麥修補、EQ、壓縮、齒音、限制器與響度量測都是本專案自行實作（`voicefix/dsp/`）。這不是授權考量：這些實作是零相位、分塊結果與整檔一致，才能保證試聽聽到的就是匯出的結果。
+降噪、口水音／噴麥修補、EQ、壓縮、齒音、限制器、響度量測、補底噪與 B6 明顯效果用的 TD-PSOLA 都是本專案自行實作（`voicefix/dsp/`）。這不是授權考量：這些實作是零相位、分塊結果與整檔一致，才能保證試聽聽到的就是匯出的結果。
 

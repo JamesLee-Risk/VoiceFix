@@ -1,5 +1,5 @@
 """Extra controls for steps that are not a plain strength slider
-(A0/B0 import, A1 editing, A11/B12 export)."""
+(A0/B0 import, A1 editing, B6 pitch, A11/B12 export)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from voicefix.core.audio_io import EXPORT_FORMATS
 from voicefix.core.regions import Region
 from voicefix.core.timefmt import describe_region
-from voicefix.dsp.key import KEYS
+from voicefix.dsp.key import CHROMATIC, KEYS
 
 AUTO_KEY = "auto"
 
@@ -177,3 +177,29 @@ class ExportPanel(QWidget):
         self.mix.setEnabled(has_backing)
         self.mix.setChecked(has_backing and self.mix.isChecked())
         self.mix.setToolTip("" if has_backing else "請先在 B0 放入伴奏。")
+
+
+class PitchPanel(QWidget):
+    """B6: which key the notes are pulled towards."""
+
+    key_changed = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.key = QComboBox()
+        self.key.addItem("自動偵測", AUTO_KEY)
+        self.key.addItem("不限調性（拉到最近的半音）", CHROMATIC)
+        for name in KEYS:
+            self.key.addItem(name, name)
+        hint = QLabel("音高曲線顯示在波形下方；紅色區塊是偏離音階、會被修正的音。", wordWrap=True)
+        hint.setStyleSheet("color: gray;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel("調性"))
+        layout.addWidget(self.key)
+        layout.addWidget(hint)
+        self.key.activated.connect(lambda i: self.key_changed.emit(self.key.itemData(i)))
+
+    def set_key(self, key: str, detected: Optional[str]) -> None:
+        self.key.setItemText(0, f"自動偵測（{detected}）" if detected else "自動偵測")
+        self.key.setCurrentIndex(max(self.key.findData(key or AUTO_KEY), 0))

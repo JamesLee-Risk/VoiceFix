@@ -34,6 +34,17 @@ class _TimeAxis(pg.AxisItem):
         return [f"{int(v // 60):02d}:{v % 60:04.1f}" if v >= 0 else "" for v in values]
 
 
+class _NoteAxis(pg.AxisItem):
+    """MIDI note numbers shown as note names (C4, D4 ...)."""
+
+    def tickStrings(self, values, scale, spacing):  # noqa: ANN001 - pyqtgraph signature
+        names = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+        return [f"{names[int(round(v)) % 12]}{int(round(v)) // 12 - 1}" for v in values]
+
+    def tickValues(self, minVal, maxVal, size):  # noqa: ANN001, N803
+        return [(1.0, [float(v) for v in range(int(minVal), int(maxVal) + 1)])]
+
+
 class _SelectViewBox(pg.ViewBox):
     select_finished = Signal(float, float, bool)  # seconds, additive
     seek = Signal(float)
@@ -103,9 +114,18 @@ class WaveformView(QWidget):
         self.spectro_plot.addItem(self.spectro_image)
         self.spectro_plot.hide()
 
+        self.pitch_plot = pg.PlotWidget(axisItems={"bottom": _TimeAxis("bottom"), "left": _NoteAxis("left")})
+        self.pitch_plot.setXLink(self.plot)
+        self.pitch_plot.setMouseEnabled(x=False, y=False)
+        self.pitch_plot.showGrid(y=True, alpha=0.25)
+        self.pitch_curve = pg.PlotDataItem(pen=pg.mkPen((243, 156, 18), width=1.5), connect="finite")
+        self.pitch_plot.addItem(self.pitch_curve)
+        self.pitch_plot.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plot, 3)
+        layout.addWidget(self.pitch_plot, 2)
         layout.addWidget(self.spectro_plot, 2)
 
         self._refresh_timer = QTimer(self, singleShot=True, interval=REFRESH_MS, timeout=self._redraw)
@@ -185,6 +205,20 @@ class WaveformView(QWidget):
         self.spectro_image.setImage(image.T, autoLevels=False, levels=(-120, -20))
         self.spectro_image.setRect(QRectF(offset / self.sr, 0, len(audio) / self.sr, freqs[-1]))
         self.spectro_plot.setYRange(0, min(freqs[-1], 16_000))
+
+    # ----- pitch --------------------------------------------------------------
+    def set_pitch(self, cents: Optional[np.ndarray], frame: int) -> None:
+        """Pitch curve (cents, NaN = unvoiced) on 10 ms frames; None hides the plot."""
+        if cents is None or not np.any(~np.isnan(cents)):
+            self.pitch_curve.setData([], [])
+            self.pitch_plot.hide()
+            return
+        seconds = (np.arange(len(cents)) * frame + frame / 2.0) / self.sr
+        notes = cents / 100.0
+        self.pitch_curve.setData(seconds, notes)
+        lo, hi = np.nanpercentile(notes, 2), np.nanpercentile(notes, 98)
+        self.pitch_plot.setYRange(np.floor(lo) - 1, np.ceil(hi) + 1, padding=0)
+        self.pitch_plot.show()
 
     # ----- regions ----------------------------------------------------------
     def _on_select(self, x0: float, x1: float, additive: bool) -> None:

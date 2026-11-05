@@ -218,13 +218,20 @@ class StepChain:
 
     def _measure(self, project: Project, index: int, audio: np.ndarray, ctx: StepContext) -> Any:
         step = self.steps[index]
-        memo_key = make_key("measure", self._input_key(project, index), step.id, step.version, self._ctx_fingerprint(ctx))
+        memo_key = make_key("measure", self._input_key(project, index), step.id, step.version, step.measure_fingerprint(ctx))
         return self._memo.get_or_compute(memo_key, lambda: step.measure(audio, self.sr, ctx))
 
-    def analyze(self, project: Project, index: int, cancel: Optional[threading.Event] = None) -> Analysis:
+    def analyze(
+        self,
+        project: Project,
+        index: int,
+        cancel: Optional[threading.Event] = None,
+        config: Optional[StepConfig] = None,
+    ) -> Analysis:
+        """``config`` lets the screen analyse with draft step settings (e.g. B6's key)."""
         step = self.steps[index]
         audio = self.render(project, index - 1, cancel=cancel)
-        ctx = self.context(project, index)
+        ctx = self.context(project, index, config)
         memo_key = make_key("analysis", self._input_key(project, index), step.id, step.version, self._ctx_fingerprint(ctx))
         return self._memo.get_or_compute(memo_key, lambda: step.analyze(audio, self.sr, ctx))
 
@@ -247,7 +254,7 @@ class StepChain:
         params = step.resolve_params(config.strength, config.option, config.advanced)
         plan_span = None
         if step.event_based:  # include events that start before the span but reach into it
-            plan_span = Region(max(0, span.start - int(step.max_event_seconds * self.sr)), span.end)
+            plan_span = Region(max(0, span.start - int(step.max_event_seconds * self.sr)), span.end)  # 0 = exact span
         memo_key = make_key(
             "plan", self._input_key(project, index), step.id, step.version, params, self._ctx_fingerprint(ctx),
             plan_span.to_json() if plan_span else None,
@@ -264,5 +271,11 @@ class StepChain:
             return []
         audio = self.render(project, index - 1, cancel=cancel)
         params = step.resolve_params(config.strength, config.option, config.advanced)
-        memo_key = make_key("events", self._input_key(project, index), step.id, step.version, params)
-        return self._memo.get_or_compute(memo_key, lambda: step.detect_events(audio, self.sr, params))
+        ctx = self.context(project, index, config)
+        measured = self._measure(project, index, audio, ctx)
+        memo_key = make_key(
+            "events", self._input_key(project, index), step.id, step.version, params, self._ctx_fingerprint(ctx)
+        )
+        return self._memo.get_or_compute(
+            memo_key, lambda: step.detect_events(audio, self.sr, params, measured=measured, ctx=ctx)
+        )

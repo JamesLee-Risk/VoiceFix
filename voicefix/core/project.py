@@ -119,6 +119,25 @@ class Project:
             steps={sid: StepConfig() for sid in step_ids},
         )
 
+    def migrated(self, step_ids: Sequence[str]) -> "Project":
+        """Adopt a newer step list. Added steps pass audio through unchanged, so
+        existing outputs keep their cache keys: one inserted before steps that are
+        already done joins as "skipped" (the project stays unlocked, and the user
+        can open it to use it); one at the end of the work joins as "not started"."""
+        if tuple(step_ids) == self.step_ids:
+            return self
+        unknown = set(self.step_ids) - set(step_ids)
+        if unknown:
+            raise ValueError(f"專案檔含有這個版本不認得的步驟：{', '.join(sorted(unknown))}")
+        current = self.step_ids[self.current_index] if 0 <= self.current_index < len(self.step_ids) else None
+        steps = {}
+        for i, sid in enumerate(step_ids):
+            later_done = any(self.steps[s].status.is_done for s in step_ids[i + 1 :] if s in self.steps)
+            new = StepConfig(status=StepStatus.SKIPPED if later_done else StepStatus.NOT_STARTED)
+            steps[sid] = self.steps.get(sid, new)
+        index = list(step_ids).index(current) if current in step_ids else 0
+        return replace(self, step_ids=tuple(step_ids), steps=steps, current_index=index)
+
     def config(self, index: int) -> StepConfig:
         return self.steps[self.step_ids[index]]
 

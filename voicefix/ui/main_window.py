@@ -32,7 +32,7 @@ from voicefix.core.regions import Region, merge_regions
 from voicefix.steps.base import Analysis, Event, Step
 from voicefix.ui.audition import AuditionController
 from voicefix.ui.controls import EventList, StepControls
-from voicefix.ui.panels import EditPanel, ExportPanel, ImportPanel
+from voicefix.ui.panels import EditPanel, ExportPanel, ImportPanel, PitchPanel
 from voicefix.ui.session import Session
 from voicefix.ui.start_dialog import AUDIO_FILTER
 from voicefix.ui.step_list import StepList
@@ -109,9 +109,11 @@ class MainWindow(QMainWindow):
         self.import_panel = ImportPanel()
         self.edit_panel = EditPanel()
         self.export_panel = ExportPanel()
+        self.pitch_panel = PitchPanel()
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        for widget in (self.import_panel, self.edit_panel, self.controls, self.event_list, self.export_panel):
+        panels = (self.import_panel, self.edit_panel, self.pitch_panel, self.controls, self.event_list, self.export_panel)
+        for widget in panels:
             right_layout.addWidget(widget)
         right_layout.addStretch(1)
         scroll = QScrollArea(widgetResizable=True)
@@ -153,6 +155,7 @@ class MainWindow(QMainWindow):
         self.import_panel.choose_accompaniment.connect(self._choose_accompaniment)
         self.import_panel.clear_accompaniment.connect(lambda: self._set_accompaniment(None))
         self.import_panel.key_changed.connect(self._set_key)
+        self.pitch_panel.key_changed.connect(self._set_pitch_key)
         self.edit_panel.edit_requested.connect(self._add_edit)
         self.edit_panel.remove_requested.connect(self._remove_edit)
         self.export_panel.export_requested.connect(self._export)
@@ -213,6 +216,9 @@ class MainWindow(QMainWindow):
         step = self.step
         config = self.project.config(index)
         self.step_settings = dict(config.settings)
+        if step.panel == "pitch" and "key" not in self.step_settings:
+            # start from the key confirmed in B0 (or auto-detect)
+            self.step_settings["key"] = self.project.config(0).settings.get("key", "auto")
         self.events = []
         self._user_disabled = tuple(config.disabled_events)  # source positions the user unticked
         self._last_analysis = None
@@ -232,6 +238,8 @@ class MainWindow(QMainWindow):
         self.import_panel.setVisible(step.panel == "import")
         self.import_panel.configure(singing)
         self.edit_panel.setVisible(step.changes_length)
+        self.pitch_panel.setVisible(step.panel == "pitch")
+        self.waveform.set_pitch(None, 1)
         self.export_panel.setVisible(step.panel == "export")
         self.export_panel.configure(singing, has_wet_effects(self.chain, self.project), self.session.backing is not None)
         self.transport.set_backing(self.session.backing is not None, step.audition_with_backing)
@@ -283,16 +291,19 @@ class MainWindow(QMainWindow):
         self.waveform.set_marks([])
         self.waveform.set_events([], [])
         self._refresh_panels()
-        project, index = self.project, self.index
+        self._start_analysis()
+        if self.step.event_based:
+            self._detect_events()
+        self.audition.reset(len(audio), self._preview_fn())
+
+    def _start_analysis(self) -> None:
+        project, index, draft = self.project, self.index, self._draft()
         self.runner.start(
-            lambda progress, cancel: self.chain.analyze(project, index, cancel),
+            lambda progress, cancel: self.chain.analyze(project, index, cancel, draft),
             on_done=self._on_analysis,
             on_failed=lambda msg: self.summary.setText(f"分析失敗：{msg}"),
             slot="analysis",
         )
-        if self.step.event_based:
-            self._detect_events()
-        self.audition.reset(len(audio), self._preview_fn())
 
     def _on_analysis(self, analysis: Analysis) -> None:
         self.summary.setText("\n".join(analysis.summary))
@@ -300,10 +311,13 @@ class MainWindow(QMainWindow):
         self.badge.setStyleSheet(BADGE_RUN if analysis.recommend else BADGE_SKIP)
         self.waveform.set_marks(analysis.marks)
         self._last_analysis = analysis
-        config = self.project.config(self.index)
-        if config.status == StepStatus.NOT_STARTED and config.strength is None and config.option is None:
+        draft = self.controls.draft  # only fill in suggestions once, never over the user's own values
+        if self.project.status(self.index) == StepStatus.NOT_STARTED and draft.strength is None and draft.option is None:
             self._apply_suggestion(analysis)
-        if self.step.panel == "import":
+        if "pitch" in analysis.data:
+            track = analysis.data["pitch"]
+            self.waveform.set_pitch(track.cents, track.frame)
+        if self.step.panel in ("import", "pitch"):
             self._refresh_panels()  # shows the detected key
         if self.step.panel == "import" and self.project.noise_sample is None and analysis.data.get("noise_sample"):
             self._set_shared("noise_sample", analysis.data["noise_sample"])
@@ -399,6 +413,9 @@ class MainWindow(QMainWindow):
             )
         if self.step.changes_length:
             self.edit_panel.set_edits(self.step_settings, sr)
+        if self.step.panel == "pitch":
+            detected = self._last_analysis.data.get("estimated_key") if self._last_analysis else None
+            self.pitch_panel.set_key(self.step_settings.get("key", "auto"), detected)
 
     def _use_selection_as_noise(self) -> None:
         selections = self.waveform.selections()
@@ -533,6 +550,13 @@ class MainWindow(QMainWindow):
         self.audition.mixer.set_backing(self.session.backing)
         self.transport.set_backing(self.session.backing is not None, self.step.audition_with_backing)
         self._refresh_panels()
+
+    def _set_pitch_key(self, key: str) -> None:
+        """B6's key changes which notes count as off-key: re-detect and re-preview."""
+        self.step_settings = {**self.step_settings, "key": key}
+        self._start_analysis()  # the summary names the key in use
+        self._detect_events()
+        self._replan()
 
     def _set_key(self, key: str) -> None:
         """Saved immediately and without changing the step's status: the key does

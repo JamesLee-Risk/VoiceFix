@@ -30,8 +30,7 @@ class Session:
                  progress: Optional[Callable[[float], None]] = None) -> None:
         self.project_path = project_path
         self.steps = build_steps(project.flow)
-        if list(project.step_ids) != [s.id for s in self.steps]:
-            raise ValueError("專案檔的步驟與這個版本的軟體不相符")
+        project = project.migrated([s.id for s in self.steps])
         digest = hashlib.sha1(str(project_path.resolve()).encode("utf-8")).hexdigest()[:16]
         self.cache = AudioCache(cache_root / digest)
         source, sr, key = load_source(project.source_path, self.cache, progress)
