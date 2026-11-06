@@ -12,6 +12,8 @@ from voicefix.steps.flow_b.cleanup import Breaths, ClicksAndPlosives, SingingDen
 from voicefix.steps.flow_b.pitch_space import PitchCorrection, Space
 from voicefix.steps.flow_b.song import GapCleanup, SingingLoudnessExport, SongImport
 from voicefix.steps.flow_b.tone import Compressor, DeEsser, ToneEQ
+from voicefix.steps.flow_c import FLOW_C_STEPS
+from voicefix.steps.timing import BeatAlign
 
 FLOW_A_STEPS: tuple[type[Step], ...] = (
     ImportCheck,
@@ -36,6 +38,7 @@ FLOW_B_STEPS: tuple[type[Step], ...] = (
     ClicksAndPlosives,
     Breaths,
     PitchCorrection,  # PRD: pitch correction works on the cleaned signal (after B2-B5)
+    BeatAlign,
     ToneEQ,
     Compressor,
     DeEsser,
@@ -43,7 +46,7 @@ FLOW_B_STEPS: tuple[type[Step], ...] = (
     SingingLoudnessExport,
 )
 
-FLOWS = {Flow.VOICE_WORK: FLOW_A_STEPS, Flow.SINGING: FLOW_B_STEPS}
+FLOWS = {Flow.VOICE_WORK: FLOW_A_STEPS, Flow.SINGING: FLOW_B_STEPS, Flow.MULTITRACK: FLOW_C_STEPS}
 IMPLEMENTED_FLOWS = tuple(FLOWS)
 
 

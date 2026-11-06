@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -60,6 +61,8 @@ class ImportPanel(QWidget):
         accompaniment_buttons.addWidget(self.clear)
         song_layout = QVBoxLayout(self.song_box)
         song_layout.setContentsMargins(0, 0, 0, 8)
+        self.tracks_label = QLabel(wordWrap=True)
+        song_layout.addWidget(self.tracks_label)
         song_layout.addWidget(QLabel("伴奏（只用來試聽與混合試聽版，不會被處理）", wordWrap=True))
         song_layout.addWidget(self.accompaniment_label)
         song_layout.addLayout(accompaniment_buttons)
@@ -77,10 +80,13 @@ class ImportPanel(QWidget):
         self.clear.clicked.connect(self.clear_accompaniment)
         self.key.activated.connect(lambda i: self.key_changed.emit(self.key.itemData(i)))
 
-    def configure(self, singing: bool) -> None:
-        """Flow B shows accompaniment and key; binaural is a flow A concept."""
+    def configure(self, singing: bool, track_names: Sequence[str] = ()) -> None:
+        """Flows B and C show accompaniment and key; binaural is a flow A concept."""
         self.song_box.setVisible(singing)
         self.binaural.setVisible(not singing)
+        self.tracks_label.setVisible(bool(track_names))
+        lines = [f"{'主唱' if i == 0 else f'和聲／疊唱 {i}'}：{name}" for i, name in enumerate(track_names)]
+        self.tracks_label.setText("軌道（底噪樣本每軌各自設定）：\n" + "\n".join(lines))
 
     def set_song_state(self, accompaniment: Optional[str], error: Optional[str], key: str, detected: Optional[str]) -> None:
         if error:
@@ -151,13 +157,17 @@ class ExportPanel(QWidget):
         self.split = QCheckBox("依台詞段落分成多個檔案")
         self.dry = QCheckBox("另外匯出乾聲（不含空間效果）")
         self.mix = QCheckBox("另外匯出與伴奏混合的試聽版")
+        self.harmony_gain_label = QLabel("混合試聽版中和聲／疊唱的音量（相對主唱）")
+        self.harmony_gain = QDoubleSpinBox(minimum=-24.0, maximum=6.0, decimals=1, singleStep=1.0, suffix=" dB")
         self.export = QPushButton("匯出…")
         self.status = QLabel(wordWrap=True)
         hint = QLabel("匯出時會自動重算標示為「需重算」的步驟。原始錄音不會被覆寫。", wordWrap=True)
         hint.setStyleSheet("color: gray;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        for widget in (QLabel("格式"), self.format, self.split, self.dry, self.mix, self.export, self.status, hint):
+        widgets = (QLabel("格式"), self.format, self.split, self.dry, self.mix, self.harmony_gain_label,
+                   self.harmony_gain, self.export, self.status, hint)
+        for widget in widgets:
             layout.addWidget(widget)
         self.export.clicked.connect(
             lambda: self.export_requested.emit(
@@ -168,8 +178,17 @@ class ExportPanel(QWidget):
             )
         )
 
-    def configure(self, singing: bool, has_wet_effects: bool, has_backing: bool) -> None:
+    def configure(self, singing: bool, has_wet_effects: bool, has_backing: bool,
+                  multitrack: bool = False, harmony_gain_db: float = 0.0) -> None:
+        """Flow C exports one file per track; its mix preview works without an
+        accompaniment too (the tracks themselves are mixed)."""
         self.split.setVisible(not singing)
+        self.harmony_gain_label.setVisible(multitrack)
+        self.harmony_gain.setVisible(multitrack)
+        self.harmony_gain.blockSignals(True)
+        self.harmony_gain.setValue(harmony_gain_db)
+        self.harmony_gain.blockSignals(False)
+        has_backing = has_backing or multitrack
         self.dry.setVisible(singing)
         self.dry.setEnabled(has_wet_effects)
         self.dry.setToolTip("" if has_wet_effects else "目前沒有套用空間效果，人聲本身就是乾聲。")
@@ -177,6 +196,7 @@ class ExportPanel(QWidget):
         self.mix.setEnabled(has_backing)
         self.mix.setChecked(has_backing and self.mix.isChecked())
         self.mix.setToolTip("" if has_backing else "請先在 B0 放入伴奏。")
+        self.mix.setText("另外匯出各軌混合（含伴奏）的試聽版" if multitrack else "另外匯出與伴奏混合的試聽版")
 
 
 class PitchPanel(QWidget):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
@@ -11,7 +12,8 @@ from typing import Callable, Optional
 import numpy as np
 
 from voicefix.core.cache import AudioCache, load_accompaniment, load_source
-from voicefix.core.chain import StepChain
+from voicefix.core.chain import Progress, StepChain
+from voicefix.core.exporter import ExportRequest, export
 from voicefix.core.project import Flow, Project, load_project, save_project
 from voicefix.core.regions import Region
 from voicefix.steps.registry import build_steps, first_affected
@@ -26,6 +28,12 @@ def default_cache_root() -> Path:
 
 
 class Session:
+    """A single-track project. ``MultiSession`` (flow C) offers the same interface."""
+
+    is_multitrack = False
+    track_names: tuple[str, ...] = ()
+    current_track = 0
+
     def __init__(self, project: Project, project_path: Path, cache_root: Path,
                  progress: Optional[Callable[[float], None]] = None) -> None:
         self.project_path = project_path
@@ -35,6 +43,7 @@ class Session:
         self.cache = AudioCache(cache_root / digest)
         source, sr, key = load_source(project.source_path, self.cache, progress)
         self.chain = StepChain(self.steps, self.cache, source, sr, key)
+        self.chain.accompaniment = self._accompaniment
         self.project = project
         self.backing: Optional[np.ndarray] = None
         self.backing_key: Optional[str] = None
@@ -88,6 +97,13 @@ class Session:
             self.backing_error = f"無法讀取伴奏：{exc}" if Path(path).exists() else f"找不到伴奏檔：{path}"
             log.warning(self.backing_error)
 
+    def _accompaniment(self):
+        """For steps that follow the beat: (cache key, loader) or None."""
+        if self.backing is None:
+            return None
+        backing = self.backing
+        return self.backing_key, lambda: backing
+
     def prepare_accompaniment(self, path: Path) -> tuple[np.ndarray, str]:
         """Decode and resample into the cache (safe to run on a worker thread)."""
         return load_accompaniment(path, self.cache, self.sr, len(self.chain.source))
@@ -100,8 +116,24 @@ class Session:
         else:
             self.backing, self.backing_key = None, None
         self.backing_error = None
-        self.update(self.project.with_shared(None, accompaniment_path=str(path.resolve()) if path else None))
+        first = first_affected(self.steps, "accompaniment")  # steps that follow the beat must recompute
+        self.update(self.project.with_shared(first, accompaniment_path=str(path.resolve()) if path else None))
 
     def to_source(self, index: int, region: Region) -> Region:
         """A region drawn on step ``index``'s input timeline, in source samples."""
         return self.chain.edit_map_before(self.project, index).region_to_source(region)
+
+    # ----- rendering (the window never drives chains directly) -------------
+    def is_ready(self, index: int) -> bool:
+        return self.chain.is_ready(self.project, index)
+
+    def render_upto(self, index: int, progress: Progress, cancel: Optional[threading.Event]) -> None:
+        self.chain.render(self.project, index, progress, cancel)
+
+    def render_step(self, candidate: Project, index: int, progress: Progress, cancel: Optional[threading.Event]) -> None:
+        """Render step ``index`` as configured in ``candidate`` (not yet committed)."""
+        self.chain.render(candidate, index, progress, cancel)
+
+    def export(self, project: Project, request: ExportRequest, progress: Progress,
+               cancel: Optional[threading.Event]) -> list[Path]:
+        return export(self.chain, project, request, progress, cancel, self.backing)

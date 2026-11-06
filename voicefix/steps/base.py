@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
@@ -69,6 +69,19 @@ class StepContext:
     disabled_events: tuple[int, ...]
     settings: Mapping[str, Any]
     edit_map: EditMap = EditMap()
+    # flow C: the lead track's input to this step, for steps that follow the lead
+    reference_key: Optional[str] = None
+    reference_loader: Optional[Callable[[], np.ndarray]] = None
+    # the accompaniment (flows B and C), for steps that follow its beat
+    accompaniment_key: Optional[str] = None
+    accompaniment_loader: Optional[Callable[[], np.ndarray]] = None
+    is_lead: bool = True  # flow C: False on harmony / double tracks
+
+    def reference(self) -> Optional[np.ndarray]:
+        return self.reference_loader() if self.reference_loader else None
+
+    def accompaniment(self) -> Optional[np.ndarray]:
+        return self.accompaniment_loader() if self.accompaniment_loader else None
 
     def is_disabled(self, event: Region) -> bool:
         tolerance = int(self.sr * EVENT_MATCH_SECONDS)
@@ -105,6 +118,8 @@ class Step(ABC):
     panel: Optional[str] = None  # extra UI: "import", "edit" or "export"
     audition_with_backing: bool = False  # flow B tone steps: listen inside the accompaniment
     wet_effect: bool = False  # spatial effects, left out of the dry export
+    uses_reference: bool = False  # flow C: output depends on the lead track (C7b, C12)
+    uses_accompaniment: bool = False  # output depends on the accompaniment (B7, C7a)
 
     def analyze(self, audio: np.ndarray, sr: int, ctx: StepContext) -> Analysis:
         return Analysis(summary=(), recommend=True, suggested_strength=self.default_strength)

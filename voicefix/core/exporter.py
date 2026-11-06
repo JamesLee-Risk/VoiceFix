@@ -5,7 +5,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator, Optional
+from contextlib import nullcontext
+from typing import Callable, ContextManager, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -89,8 +90,8 @@ def export(
 class _OverwriteGuard:
     """No export may replace the source recording or the accompaniment."""
 
-    def __init__(self, project: Project) -> None:
-        inputs = [project.source_path, project.accompaniment_path]
+    def __init__(self, project: Project, extra: Sequence[Optional[str]] = ()) -> None:
+        inputs = [project.source_path, project.accompaniment_path, *extra]
         self._inputs = {Path(p).resolve() for p in inputs if p}
 
     def check(self, path: Path) -> Path:
@@ -121,3 +122,76 @@ def _write_main(
         written.append(path)
         progress("分段寫入", n / len(segments))
     return written
+
+
+@dataclass(frozen=True)
+class TrackRender:
+    name: str
+    chain: StepChain
+    project: Project
+    gain_db: float  # level in the mix preview
+
+
+def mixed_tracks_blocks(tracks: list[tuple[np.ndarray, float]], backing: Optional[np.ndarray], sr: int, total: int) -> Iterator[np.ndarray]:
+    """Sum of (audio, linear gain) tracks plus accompaniment, limited, in chunks."""
+    pad = int(MIX_PAD_SECONDS * sr)
+    for chunk in iter_chunks(total, int(CHUNK_SECONDS * sr), pad):
+        lo, hi = chunk.padded.start, chunk.padded.end
+        mixed = np.zeros((hi - lo, 2), dtype=np.float32)
+        for audio, gain in tracks:
+            part = np.asarray(audio[lo:hi], dtype=np.float32) * np.float32(gain)
+            mixed[: len(part)] += part  # a mono track broadcasts to both sides
+        if backing is not None:
+            part = np.asarray(backing[lo:hi], dtype=np.float32)
+            mixed[: len(part)] += part
+        yield limit(mixed, sr, MIX_CEILING_DBTP)[chunk.core.start - lo : chunk.core.end - lo]
+
+
+def export_multitrack(
+    tracks: list[TrackRender],
+    request: ExportRequest,
+    progress: Progress = noop_progress,
+    cancel: Optional[threading.Event] = None,
+    backing: Optional[np.ndarray] = None,
+    accompaniment_path: Optional[str] = None,
+    reference_scope: Callable[[Project], ContextManager[None]] = lambda lead: nullcontext(),
+) -> list[Path]:
+    """Flow C: one cleaned file per track, optional dry stems and a mix preview.
+    ``reference_scope(lead)`` makes renders follow that lead (C7 / C12), so dry
+    stems use the dry lead's loudness like the lead's own dry stem does."""
+    fmt = audio_io.export_format(request.format_key)
+    target = request.path.with_suffix(fmt.suffix)
+    guard = _OverwriteGuard(tracks[0].project, [t.project.source_path for t in tracks] + [accompaniment_path])
+    written, rendered = [], []
+    lead = tracks[0]
+    dry_lead = without_wet_effects(lead.chain, lead.project)
+    for n, track in enumerate(tracks, start=1):
+        with reference_scope(lead.project):
+            audio = track.chain.render(track.project, len(track.chain.steps) - 1, progress, cancel)
+        rendered.append(audio)
+        path = guard.check(target.with_name(f"{target.stem}_{n}_{_safe(track.name)}{fmt.suffix}"))
+        audio_io.write_audio(path, audio, track.chain.sr, fmt, lambda f, name=track.name: progress(f"寫入 {name}", f))
+        written.append(path)
+        if request.dry and has_wet_effects(track.chain, track.project):
+            with reference_scope(dry_lead):
+                dry = track.chain.render(
+                    without_wet_effects(track.chain, track.project), len(track.chain.steps) - 1, progress, cancel
+                )
+            path = guard.check(target.with_name(f"{target.stem}_{n}_{_safe(track.name)}{DRY_SUFFIX}{fmt.suffix}"))
+            audio_io.write_audio(path, dry, track.chain.sr, fmt)
+            written.append(path)
+        check_cancel(cancel)
+    if request.mix:
+        sr = tracks[0].chain.sr
+        total = max(len(a) for a in rendered)
+        gains = [10.0 ** (t.gain_db / 20.0) for t in tracks]
+        path = guard.check(target.with_name(f"{target.stem}{MIX_SUFFIX}{fmt.suffix}"))
+        blocks = mixed_tracks_blocks(list(zip(rendered, gains)), backing, sr, total)
+        audio_io.write_blocks(path, blocks, total, 2, sr, fmt, lambda f: progress("寫入混合試聽版", f))
+        written.append(path)
+    return written
+
+
+def _safe(name: str) -> str:
+    """A track name usable in a file name."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)[:40] or "track"

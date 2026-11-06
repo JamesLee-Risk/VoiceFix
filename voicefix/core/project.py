@@ -22,9 +22,14 @@ PROJECT_SUFFIX = ".voicefix"
 class Flow(str, Enum):
     VOICE_WORK = "A"
     SINGING = "B"
+    MULTITRACK = "C"
 
 
-FLOW_LABELS = {Flow.VOICE_WORK: "流程 A：音聲作品", Flow.SINGING: "流程 B：歌聲"}
+FLOW_LABELS = {
+    Flow.VOICE_WORK: "流程 A：音聲作品",
+    Flow.SINGING: "流程 B：歌聲",
+    Flow.MULTITRACK: "流程 C：多軌歌聲（主唱＋和聲）",
+}
 
 
 class StepStatus(str, Enum):
@@ -193,6 +198,7 @@ class Project:
             "protected": [r.to_json() for r in self.protected],
             "noise_sample": self.noise_sample.to_json() if self.noise_sample else None,
             "binaural": self.binaural,
+            "accompaniment": self.accompaniment_path,
         }
         return {k: full[k] for k in keys}
 

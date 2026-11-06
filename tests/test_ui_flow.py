@@ -224,3 +224,55 @@ def test_broken_accompaniment_does_not_block_opening(app, tmp_path: Path):
     session.update(dc_replace(session.project, accompaniment_path=str(broken)))
     reopened = Session.open(tmp_path / "v.voicefix", tmp_path / "cache")
     assert reopened.backing is None and reopened.backing_error
+
+
+@pytest.fixture
+def multitrack_window(app, tmp_path: Path, monkeypatch):
+    from tests.test_align import ONSETS, SHIFTS, phrase_track
+    from voicefix.ui.multisession import MultiSession
+
+    errors: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: errors.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    paths = [tmp_path / "lead.wav", tmp_path / "harmony.wav"]
+    sf.write(paths[0], phrase_track(ONSETS, 6900, [0.0] * 12), SR)
+    sf.write(paths[1], phrase_track(ONSETS, 7300, SHIFTS) * 0.5, SR)
+    session = MultiSession.create(["主唱", "和聲"], paths, tmp_path / "song.voicefix", tmp_path / "cache")
+    win = MainWindow(session)
+    win.errors = errors
+    settle(app)
+    yield win
+    win.close()
+    settle(app)
+
+
+def test_walk_flow_c_switch_tracks_and_export(app, multitrack_window, tmp_path: Path, monkeypatch):
+    win = multitrack_window
+    assert not win.track_bar.isHidden() and win.track_bar.tracks.count() == 2
+    while win.step.code != "C3":
+        win._apply()
+        settle(app)
+    win.track_bar.tracks.setCurrentIndex(1)  # look at the harmony
+    settle(app)
+    assert win.session.current_track == 1 and win.step.code == "C3"
+    win.track_bar.own.setChecked(True)  # this harmony gets its own noise-reduction strength
+    settle(app)
+    win.controls.slider.setValue(10)
+    win._apply()
+    settle(app)
+    assert win.session.multi.project(1).config(2).strength == 10
+    assert win.session.multi.project(0).config(2).strength != 10
+    while win.step.code != "C12":
+        assert win.transport.others.isChecked() == win.step.audition_with_backing
+        win._apply()
+        settle(app)
+    assert win.transport.others.isChecked() and win._others is not None  # other tracks play along
+    out = tmp_path / "final"
+    monkeypatch.setattr("voicefix.ui.main_window.QFileDialog.getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.export_panel.mix.setChecked(True)
+    win.export_panel.export.click()
+    settle(app)
+    assert (tmp_path / "final_1_主唱.wav").exists() and (tmp_path / "final_2_和聲.wav").exists()
+    assert (tmp_path / "final_mix.wav").exists()
+    assert all(win.session.multi.project(t).status(i) == StepStatus.APPLIED for t in range(2) for i in range(12))
+    assert win.errors == []

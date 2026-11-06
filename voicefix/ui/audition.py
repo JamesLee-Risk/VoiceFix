@@ -54,7 +54,6 @@ class AuditionController(QObject):
         transport.mode_changed.connect(self.set_mode)
         transport.loop_changed.connect(lambda on: setattr(self.mixer, "loop", on))
         transport.gain_match_changed.connect(lambda on: setattr(self.mixer, "gain_match_enabled", on))
-        transport.backing_changed.connect(lambda on: setattr(self.mixer, "backing_enabled", on))
         transport.spectrogram_changed.connect(self._on_spectrogram)
         waveform.seek_requested.connect(self.seek)
 

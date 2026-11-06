@@ -16,6 +16,7 @@ class TransportBar(QWidget):
     loop_changed = Signal(bool)
     gain_match_changed = Signal(bool)
     backing_changed = Signal(bool)
+    others_changed = Signal(bool)
     spectrogram_changed = Signal(bool)
     previous_requested = Signal()
     skip_requested = Signal()
@@ -42,6 +43,9 @@ class TransportBar(QWidget):
         self.backing = QCheckBox("伴奏一起播")
         self.backing.setToolTip("在伴奏中判斷效果。伴奏不會被處理。")
         self.backing.setVisible(False)
+        self.others = QCheckBox("其他軌一起播")
+        self.others.setToolTip("在其他聲部（主唱或和聲）中判斷效果。")
+        self.others.setVisible(False)
         self.previous = QPushButton("◀ 上一步")
         self.skip = QPushButton("略過此步")
         self.apply = QPushButton("套用並前往下一步 ▶")
@@ -52,7 +56,7 @@ class TransportBar(QWidget):
         layout.addWidget(self.play)
         for button in self.mode_buttons.values():
             layout.addWidget(button)
-        for widget in (self.loop, self.gain_match, self.gain_label, self.backing, self.spectrogram):
+        for widget in (self.loop, self.gain_match, self.gain_label, self.backing, self.others, self.spectrogram):
             layout.addWidget(widget)
         layout.addStretch(1)
         for widget in (self.previous, self.skip, self.apply):
@@ -65,6 +69,7 @@ class TransportBar(QWidget):
         self.gain_match.toggled.connect(self.gain_match_changed)
         self.spectrogram.toggled.connect(self.spectrogram_changed)
         self.backing.toggled.connect(self.backing_changed)
+        self.others.toggled.connect(self.others_changed)
         self.previous.clicked.connect(self.previous_requested)
         self.skip.clicked.connect(self.skip_requested)
         self.apply.clicked.connect(self.apply_requested)
@@ -78,6 +83,10 @@ class TransportBar(QWidget):
     def set_backing(self, available: bool, checked: bool) -> None:
         self.backing.setVisible(available)
         self.backing.setChecked(available and checked)
+
+    def set_others(self, available: bool, checked: bool) -> None:
+        self.others.setVisible(available)
+        self.others.setChecked(available and checked)
 
     def set_gain_db(self, gain_db: Optional[float]) -> None:
         self.gain_label.setText("" if gain_db is None else f"（處理後 {gain_db:+.1f} dB）")

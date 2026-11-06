@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from voicefix.core.exporter import ExportRequest, export, has_wet_effects
+from voicefix.core.exporter import ExportRequest, has_wet_effects
 from voicefix.core.project import Flow, StepConfig, StepStatus
 from voicefix.core.regions import Region, merge_regions
 from voicefix.steps.base import Analysis, Event, Step
@@ -36,6 +37,7 @@ from voicefix.ui.panels import EditPanel, ExportPanel, ImportPanel, PitchPanel
 from voicefix.ui.session import Session
 from voicefix.ui.start_dialog import AUDIO_FILTER
 from voicefix.ui.step_list import StepList
+from voicefix.ui.trackbar import TrackBar
 from voicefix.ui.transport import TransportBar
 from voicefix.ui.waveform import WaveformView
 from voicefix.ui.workers import TaskRunner
@@ -62,7 +64,7 @@ class MainWindow(QMainWindow):
         self.resize(1440, 860)
         self._build_ui()
         self.audition = AuditionController(session.sr, self.waveform, self.transport, self.runner)
-        self.audition.mixer.set_backing(session.backing)
+        self._others = None  # flow C: the other tracks' input to this step, summed
         self.audition.error.connect(self.show_error)
         self.audition.busy.connect(lambda busy: self.statusBar().showMessage("試聽計算中…" if busy else "", 0))
         self._connect()
@@ -84,6 +86,9 @@ class MainWindow(QMainWindow):
         header = QWidget()
         header_layout = QVBoxLayout(header)
         header_layout.addLayout(title_row)
+        self.track_bar = TrackBar()
+        self.track_bar.setVisible(self.session.is_multitrack)
+        header_layout.addWidget(self.track_bar)
         header_layout.addWidget(self.description)
         header_layout.addWidget(self.summary)
 
@@ -152,6 +157,11 @@ class MainWindow(QMainWindow):
         self.import_panel.binaural_changed.connect(lambda on: self._set_shared("binaural", on))
         self.import_panel.use_selection_as_noise.connect(self._use_selection_as_noise)
         self.import_panel.show_noise.connect(self._show_noise)
+        self.track_bar.track_chosen.connect(self._choose_track)
+        self.track_bar.own_settings_changed.connect(self._set_own_settings)
+        self.transport.backing_changed.connect(lambda _: self._refresh_backing())
+        self.transport.others_changed.connect(lambda _: self._refresh_backing())
+        self.export_panel.harmony_gain.valueChanged.connect(self._set_harmony_gain)
         self.import_panel.choose_accompaniment.connect(self._choose_accompaniment)
         self.import_panel.clear_accompaniment.connect(lambda: self._set_accompaniment(None))
         self.import_panel.key_changed.connect(self._set_key)
@@ -234,15 +244,27 @@ class MainWindow(QMainWindow):
         self.controls.load(step, config)
         self.controls.setVisible(step.has_strength or bool(step.options) or len(step.scopes) > 1)
         self.event_list.setVisible(step.event_based)
-        singing = self.project.flow == Flow.SINGING
+        singing = self.project.flow in (Flow.SINGING, Flow.MULTITRACK)
+        multitrack = self.session.is_multitrack
         self.import_panel.setVisible(step.panel == "import")
-        self.import_panel.configure(singing)
+        self.import_panel.configure(singing, self.session.track_names)
         self.edit_panel.setVisible(step.changes_length)
         self.pitch_panel.setVisible(step.panel == "pitch")
         self.waveform.set_pitch(None, 1)
         self.export_panel.setVisible(step.panel == "export")
-        self.export_panel.configure(singing, has_wet_effects(self.chain, self.project), self.session.backing is not None)
+        gain = self.session.multi.harmony_gain_db if multitrack else 0.0
+        self.export_panel.configure(
+            singing, has_wet_effects(self.chain, self.project), self.session.backing is not None, multitrack, gain
+        )
         self.transport.set_backing(self.session.backing is not None, step.audition_with_backing)
+        self.transport.set_others(multitrack, step.audition_with_backing)
+        if multitrack:
+            has_settings = step.has_strength or bool(step.options) or bool(step.advanced)
+            self.track_bar.refresh(
+                self.session.track_names, self.session.current_track, not self.session.is_linked(step.id), has_settings
+            )
+        self._others = None
+        self._refresh_backing()
         is_last = index == len(self.session.steps) - 1
         self.transport.set_navigation(index > 0, not is_last, None if is_last else "套用並前往下一步 ▶")
         self._refresh_step_list()
@@ -252,13 +274,13 @@ class MainWindow(QMainWindow):
     def _ensure_input(self, then: Callable[[], None]) -> None:
         """Render the previous step's output first if it is stale or missing."""
         upto = self.index - 1
-        if self.chain.is_ready(self.project, upto):
+        if self.session.is_ready(upto):
             then()
             return
-        project = self.project
+        session = self.session
         self._run_long(
             "準備這一步的輸入（重算前面的步驟）",
-            lambda progress, cancel: self.chain.render(project, upto, progress, cancel),
+            lambda progress, cancel: session.render_upto(upto, progress, cancel),
             lambda _: (self._mark_fresh(upto), then()),
             on_cancelled=lambda: self.summary.setText("已取消。請重新選擇步驟。"),
         )
@@ -295,6 +317,8 @@ class MainWindow(QMainWindow):
         if self.step.event_based:
             self._detect_events()
         self.audition.reset(len(audio), self._preview_fn())
+        if self.session.is_multitrack:
+            self._load_others()
 
     def _start_analysis(self) -> None:
         project, index, draft = self.project, self.index, self._draft()
@@ -491,9 +515,10 @@ class MainWindow(QMainWindow):
             self._finish_apply(candidate, index)
             return
         self.audition.stop()
+        session = self.session
         self._run_long(
-            f"套用 {self.step.code} {self.step.title}",
-            lambda progress, cancel: self.chain.render(candidate, index, progress, cancel),
+            f"套用 {self.step.code} {self.step.title}" + ("（所有軌）" if session.is_multitrack else ""),
+            lambda progress, cancel: session.render_step(candidate, index, progress, cancel),
             lambda _: self._finish_apply(candidate, index),
         )
 
@@ -519,11 +544,11 @@ class MainWindow(QMainWindow):
         self.session.update(project)
         self._refresh_step_list()
         request = ExportRequest(Path(path), format_key, split, dry, mix)
-        backing = self.session.backing
+        session = self.session
         self.audition.stop()
         self._run_long(
             "匯出",
-            lambda progress, cancel: export(self.chain, project, request, progress, cancel, backing),
+            lambda progress, cancel: session.export(project, request, progress, cancel),
             self._on_exported,
         )
 
@@ -547,9 +572,55 @@ class MainWindow(QMainWindow):
 
     def _accompaniment_ready(self, path: Optional[Path], prepared) -> None:
         self.session.set_accompaniment(path, prepared)
-        self.audition.mixer.set_backing(self.session.backing)
         self.transport.set_backing(self.session.backing is not None, self.step.audition_with_backing)
+        self._refresh_backing()
         self._refresh_panels()
+
+    # ============================================================ listening
+    def _refresh_backing(self) -> None:
+        """What plays along with the track under test: accompaniment and/or the other tracks."""
+        parts = []
+        if self.transport.backing.isChecked() and self.session.backing is not None:
+            parts.append(self.session.backing)
+        if self.transport.others.isChecked() and self._others is not None:
+            parts.append(self._others)
+        combined = None
+        if parts:
+            combined = parts[0] if len(parts) == 1 else (np.asarray(parts[0], dtype=np.float32) + parts[1])
+        self.audition.mixer.set_backing(combined)
+        self.audition.mixer.backing_enabled = combined is not None
+
+    def _load_others(self) -> None:
+        session, index, track = self.session, self.index, self.session.current_track
+        self.runner.start(
+            lambda progress, cancel: (track, index, session.others_mix(index, exclude=track)),
+            on_done=self._others_ready,
+            on_failed=lambda msg: self.show_error(f"無法準備其他軌：{msg}"),
+            slot="others",
+        )
+
+    def _others_ready(self, result) -> None:
+        track, index, mixed = result
+        if (track, index) != (self.session.current_track, self.index):
+            return  # the user moved to another track or step meanwhile
+        self._others = mixed
+        self._refresh_backing()
+
+    # ============================================================ tracks (C)
+    def _choose_track(self, track: int) -> None:
+        if self._long_task is not None or track == self.session.current_track:
+            return
+        self.session.current_track = track
+        self.enter_step(self.index)
+
+    def _set_own_settings(self, own: bool) -> None:
+        """Unlinking keeps the current values; re-linking takes the shared ones back."""
+        self.session.set_linked(self.step.id, not own)
+        self.enter_step(self.index)
+
+    def _set_harmony_gain(self, gain_db: float) -> None:
+        if self.session.is_multitrack:
+            self.session.set_harmony_gain(gain_db)
 
     def _set_pitch_key(self, key: str) -> None:
         """B6's key changes which notes count as off-key: re-detect and re-preview."""

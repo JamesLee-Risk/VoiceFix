@@ -22,6 +22,10 @@ from voicefix.core.regions import Region, ScopeMode, blend, fade_samples, keep_m
 from voicefix.steps.base import Analysis, Step, StepContext
 
 Progress = Callable[[str, float], None]
+# flow C: step index -> (cache key, loader) of the lead track's input to that step
+ReferenceProvider = Callable[[int], tuple[str, Callable[[], np.ndarray]]]
+# the accompaniment: (cache key, loader), or None when the project has none
+AccompanimentProvider = Callable[[], Optional[tuple[str, Callable[[], np.ndarray]]]]
 MEMO_SIZE = 16
 CUT_FADE_SECONDS = 0.005
 
@@ -57,8 +61,18 @@ class _Memo:
 
 
 class StepChain:
-    def __init__(self, steps: Sequence[Step], cache: AudioCache, source: np.ndarray, sr: int, source_key: str) -> None:
+    def __init__(
+        self,
+        steps: Sequence[Step],
+        cache: AudioCache,
+        source: np.ndarray,
+        sr: int,
+        source_key: str,
+        reference: Optional[ReferenceProvider] = None,
+    ) -> None:
         self.steps = list(steps)
+        self.reference = reference  # set on flow C harmony tracks; None on the lead
+        self.accompaniment: Optional[AccompanimentProvider] = None  # set by the session
         self.cache = cache
         self.source = source
         self.sr = sr
@@ -97,14 +111,35 @@ class StepChain:
             disabled_events=tuple(edit_map.to_edited(p) for p in config.disabled_events),
             settings=config.settings,
             edit_map=edit_map,
+            **self._reference_fields(index),
         )
+
+    def _reference_fields(self, index: int) -> dict[str, Any]:
+        fields: dict[str, Any] = {"is_lead": self.reference is None}
+        step = self.steps[index]
+        if self.reference is not None and step.uses_reference:
+            fields["reference_key"], fields["reference_loader"] = self.reference(index)
+        if step.uses_accompaniment and self.accompaniment is not None:
+            provided = self.accompaniment()
+            if provided is not None:
+                fields["accompaniment_key"], fields["accompaniment_loader"] = provided
+        return fields
+
+    def _accompaniment_key(self) -> Optional[str]:
+        provided = self.accompaniment() if self.accompaniment is not None else None
+        return provided[0] if provided else None
 
     # ----- cache keys -------------------------------------------------------
     def _step_key(self, prev: str, project: Project, index: int, config: StepConfig, force: bool) -> str:
         step = self.steps[index]
         if step.passthrough or not (force or config.status.is_active):
             return prev
-        return make_key(prev, step.id, step.version, config.fingerprint(), project.shared_fingerprint(step.shared_keys))
+        parts = [prev, step.id, step.version, config.fingerprint(), project.shared_fingerprint(step.shared_keys)]
+        if self.reference is not None and step.uses_reference:
+            parts.append(self.reference(index)[0])  # the lead's input: follow it when it changes
+        if step.uses_accompaniment:
+            parts.append(self._accompaniment_key())  # the beat grid comes from it
+        return make_key(*parts)
 
     def output_key(self, project: Project, index: int) -> str:
         key = self.source_key
@@ -211,6 +246,9 @@ class StepChain:
                 "noise": ctx.noise_sample.to_json() if ctx.noise_sample else None,
                 "dis": list(ctx.disabled_events),
                 "settings": ctx.settings,
+                "ref": ctx.reference_key,
+                "acc": ctx.accompaniment_key,
+                "lead": ctx.is_lead,
             },
             sort_keys=True,
             default=str,
