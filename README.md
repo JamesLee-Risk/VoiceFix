@@ -2,7 +2,15 @@
 
 用一步一步的引導流程，讓不懂聲音工程的人也能把原始人聲錄音處理乾淨。提供三條流程：**流程 A 音聲作品**（ASMR、廣播劇、雙耳錄音）、**流程 B 歌聲**（翻唱、原創歌曲的主唱）與**流程 C 多軌歌聲**（1 條主唱＋最多 4 條和聲／疊唱）。
 
-## 安裝與執行
+## 下載（Windows）
+
+到 GitHub 的 Releases 下載 `VoiceFix-<版本>-windows-x64.zip`，解壓縮後執行資料夾裡的 `VoiceFix.exe`，不需要安裝 Python。
+
+- 打包版不含選用的 AI 降噪（PyTorch 約 1 GB）；需要的話請用下方的原始碼方式安裝。
+- 遇到問題時，記錄檔在 `%LOCALAPPDATA%\VoiceFixoicefix.log`。
+- 檢查安裝是否完整：在命令提示字元執行 `VoiceFix.exe --self-test 結果.txt`，再打開 `結果.txt`。
+
+## 從原始碼安裝與執行
 
 需要 Python 3.10 以上（Windows 10/11）。
 
@@ -26,6 +34,8 @@ python -m venv .venv
 
 操作：波形上拖曳＝選取（Ctrl＋拖曳＝多選）、點一下＝移動播放位置、滾輪＝縮放、右鍵拖曳＝平移。
 空白鍵＝播放／停止，B＝切換處理前／處理後，R＝只聽被移除的聲音。
+
+自己打包 Windows 版：`.venv\Scripts\python -m pip install pyinstaller`，再執行 `.venv\Scripts\python packaging/build.py`。它會打包、跑自我檢查，通過後在 `dist/` 產生 zip。
 
 ## 目前進度（MVP）
 

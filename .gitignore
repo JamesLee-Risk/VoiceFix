@@ -10,3 +10,7 @@ htmlcov/
 # local-only documents
 Claude.md
 音聲／歌聲清理工具 PRD.md
+
+# packaging output
+build/
+dist/
