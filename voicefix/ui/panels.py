@@ -200,9 +200,11 @@ class ExportPanel(QWidget):
 
 
 class PitchPanel(QWidget):
-    """B6: which key the notes are pulled towards."""
+    """B6: which key the notes are pulled towards, and per-note targets."""
 
     key_changed = Signal(str)
+    shift_target = Signal(int)  # +1 / -1 semitone for the selected note
+    reset_target = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -213,12 +215,35 @@ class PitchPanel(QWidget):
             self.key.addItem(name, name)
         hint = QLabel("音高曲線顯示在波形下方；紅色區塊是偏離音階、會被修正的音。", wordWrap=True)
         hint.setStyleSheet("color: gray;")
+        self.note_label = QLabel(wordWrap=True)
+        self.up = QPushButton("↑ 半音")
+        self.down = QPushButton("↓ 半音")
+        self.auto = QPushButton("還原自動")
+        buttons = QHBoxLayout()
+        for button in (self.up, self.down, self.auto):
+            buttons.addWidget(button)
+        target_hint = QLabel("偏太多的音會被當成隔壁的音（綠色虛線是程式認定的目標）。認錯時點選那個音，再用 ↑↓ 改正。", wordWrap=True)
+        target_hint.setStyleSheet("color: gray;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QLabel("調性"))
         layout.addWidget(self.key)
         layout.addWidget(hint)
+        layout.addWidget(QLabel("目標音"))
+        layout.addWidget(self.note_label)
+        layout.addLayout(buttons)
+        layout.addWidget(target_hint)
         self.key.activated.connect(lambda i: self.key_changed.emit(self.key.itemData(i)))
+        self.up.clicked.connect(lambda: self.shift_target.emit(1))
+        self.down.clicked.connect(lambda: self.shift_target.emit(-1))
+        self.auto.clicked.connect(self.reset_target)
+        self.show_note(None)
+
+    def show_note(self, text: Optional[str], can_up: bool = False, can_down: bool = False, manual: bool = False) -> None:
+        self.note_label.setText(text or "在音高曲線上點一個音，可以改它的目標音。")
+        self.up.setEnabled(can_up)
+        self.down.setEnabled(can_down)
+        self.auto.setEnabled(manual)
 
     def set_key(self, key: str, detected: Optional[str]) -> None:
         self.key.setItemText(0, f"自動偵測（{detected}）" if detected else "自動偵測")

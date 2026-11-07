@@ -25,7 +25,17 @@ from voicefix.dsp import pitch
 from voicefix.dsp.filters import highpass_sos, zero_phase
 from voicefix.dsp.key import estimate_key, note_name, scale_pitch_classes
 from voicefix.dsp.psola import psola
-from voicefix.steps.base import Analysis, Event, EventStep, Option, Params, ParamSpec, Step, StepContext
+from voicefix.steps.base import (
+    MAX_NOTE_TARGET_CENTS,
+    Analysis,
+    Event,
+    EventStep,
+    Option,
+    Params,
+    ParamSpec,
+    Step,
+    StepContext,
+)
 
 AUTO_KEY = "auto"
 PIECE_FADE_SECONDS = 0.025
@@ -142,23 +152,33 @@ class PitchCorrection(EventStep):
         chosen = (ctx.settings.get("key") if ctx else None) or AUTO_KEY
         return measured.estimated_key if chosen == AUTO_KEY else chosen
 
-    def _deviations(self, measured: PitchMeasure, key: str) -> list[tuple[pitch.Note, float, float]]:
-        """(note, cents off its scale target, target) for every note."""
+    def _deviations(
+        self, measured: PitchMeasure, key: str, ctx: Optional[StepContext] = None
+    ) -> list[tuple[pitch.Note, float, float, bool]]:
+        """(note, cents off its target, target, chosen by hand) for every note.
+
+        Without a hand-picked target the nearest in-key note is assumed, which is
+        wrong once a note is more than half a semitone off: then the neighbour
+        is nearer. That is what the per-note targets are for."""
         classes = scale_pitch_classes(key)
         out = []
         for note in measured.notes:
-            target = float(pitch.nearest_in_scale(note.cents, classes))
-            out.append((note, note.cents - target, target))
+            manual = ctx.target_for(note.region) if ctx else None
+            if manual is not None and abs(manual - note.cents) > MAX_NOTE_TARGET_CENTS:
+                manual = None  # left over from an edit that moved the note: never shift that far
+            target = float(manual) if manual is not None else float(pitch.nearest_in_scale(note.cents, classes))
+            out.append((note, note.cents - target, target, manual is not None))
         return out
 
     def detect_events(self, audio, sr, params, span=None, measured=None, ctx=None) -> list[Event]:
         measured = measured or self.measure(audio, sr, ctx)
         events = []
-        for note, deviation, target in self._deviations(measured, self.key_for(ctx, measured)):
-            if abs(deviation) < params["threshold_cents"] or (span and not note.region.overlaps(span)):
+        for note, deviation, target, manual in self._deviations(measured, self.key_for(ctx, measured), ctx):
+            if (abs(deviation) < params["threshold_cents"] and not manual) or (span and not note.region.overlaps(span)):
                 continue
             direction = "偏高" if deviation > 0 else "偏低"
-            events.append(Event(note.region, f"{direction} {abs(deviation):.0f} 音分（{note_name(target)}）"))
+            source = "，手動" if manual else ""
+            events.append(Event(note.region, f"{direction} {abs(deviation):.0f} 音分（{note_name(target)}{source}）"))
         return events
 
     def detect(self, chunk: np.ndarray, sr: int, params: Params, offset: int) -> list[Region]:
@@ -174,10 +194,17 @@ class PitchCorrection(EventStep):
         off = self.detect_events(audio, sr, params, measured=measured, ctx=ctx)
         source = "自動偵測" if (ctx.settings.get("key") or AUTO_KEY) == AUTO_KEY else "你選的"
         lines = [f"調性：{key}（{source}）。共 {len(measured.notes)} 個音，其中 {len(off)} 個偏離 30 音分以上。"]
-        data = {"pitch": measured.track, "key": key, "estimated_key": measured.estimated_key}
+        classes = scale_pitch_classes(key)
+        notes = [
+            {"region": n.region, "cents": n.cents, "target": t, "manual": m,
+             "auto_target": float(pitch.nearest_in_scale(n.cents, classes))}
+            for n, _, t, m in self._deviations(measured, key, ctx)
+        ]
+        data = {"pitch": measured.track, "key": key, "estimated_key": measured.estimated_key, "notes": notes}
         if not off:
             return Analysis((*lines, "音準已經不錯，可以略過。"), False, self.default_strength, data=data)
         lines.append("清單裡的音可以逐一取消勾選；刻意的滑音或藍調音請取消。")
+        lines.append("曲線上每個音標著程式認定的目標音；認錯的音（偏太多時會被當成隔壁的音）請點選後用 ↑↓ 改正。")
         return Analysis(tuple(lines), True, self.default_strength, data=data)
 
     # ----- rendering --------------------------------------------------------
@@ -189,7 +216,7 @@ class PitchCorrection(EventStep):
         }
         shifts = [
             NoteShift(n.region, -d / 100.0 * params["amount"], n.frames, target)
-            for n, d, target in self._deviations(measured, self.key_for(ctx, measured))
+            for n, d, target, _ in self._deviations(measured, self.key_for(ctx, measured), ctx)
             if n.region in chosen
         ]
         if not params["effect"]:

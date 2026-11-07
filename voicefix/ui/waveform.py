@@ -81,9 +81,20 @@ class _SelectViewBox(pg.ViewBox):
             self.translateBy(x=last - now)
 
 
+NOTE_AUTO_COLOR = (46, 204, 113)
+NOTE_MANUAL_COLOR = (231, 126, 34)
+NOTE_NAMES = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+
+
+def _note_label(cents: float) -> str:
+    midi = int(round(cents / 100.0))
+    return f"{NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+
+
 class WaveformView(QWidget):
     selections_changed = Signal()
     seek_requested = Signal(int)
+    pitch_clicked = Signal(int)  # sample position clicked on the pitch plot
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -120,6 +131,15 @@ class WaveformView(QWidget):
         self.pitch_plot.showGrid(y=True, alpha=0.25)
         self.pitch_curve = pg.PlotDataItem(pen=pg.mkPen((243, 156, 18), width=1.5), connect="finite")
         self.pitch_plot.addItem(self.pitch_curve)
+        self.target_lines = pg.PlotDataItem(pen=pg.mkPen(NOTE_AUTO_COLOR, width=2, style=Qt.PenStyle.DashLine), connect="pairs")
+        self.manual_lines = pg.PlotDataItem(pen=pg.mkPen(NOTE_MANUAL_COLOR, width=2.5), connect="pairs")
+        self.pitch_plot.addItem(self.target_lines)
+        self.pitch_plot.addItem(self.manual_lines)
+        self.selected_note = pg.LinearRegionItem(brush=pg.mkBrush(52, 152, 219, 60), movable=False)
+        self.selected_note.hide()
+        self.pitch_plot.addItem(self.selected_note, ignoreBounds=True)
+        self._note_labels: list[pg.TextItem] = []
+        self.pitch_plot.scene().sigMouseClicked.connect(self._on_pitch_click)
         self.pitch_plot.hide()
 
         layout = QVBoxLayout(self)
@@ -219,6 +239,37 @@ class WaveformView(QWidget):
         lo, hi = np.nanpercentile(notes, 2), np.nanpercentile(notes, 98)
         self.pitch_plot.setYRange(np.floor(lo) - 1, np.ceil(hi) + 1, padding=0)
         self.pitch_plot.show()
+
+    def set_pitch_notes(self, notes: Sequence[dict], selected: Optional[Region]) -> None:
+        """Each note's target as a short line with its name; hand-picked ones in orange."""
+        for label in self._note_labels:
+            self.pitch_plot.removeItem(label)
+        self._note_labels = []
+        auto_x, auto_y, manual_x, manual_y = [], [], [], []
+        for note in notes:
+            x0, x1 = note["region"].start / self.sr, note["region"].end / self.sr
+            y = note["target"] / 100.0
+            xs, ys = (manual_x, manual_y) if note["manual"] else (auto_x, auto_y)
+            xs += [x0, x1]
+            ys += [y, y]
+            color = NOTE_MANUAL_COLOR if note["manual"] else NOTE_AUTO_COLOR
+            label = pg.TextItem(_note_label(note["target"]) + ("（手動）" if note["manual"] else ""), color=color, anchor=(0, 1))
+            label.setPos(x0, y + 0.3)
+            self.pitch_plot.addItem(label, ignoreBounds=True)
+            self._note_labels.append(label)
+        self.target_lines.setData(auto_x, auto_y)
+        self.manual_lines.setData(manual_x, manual_y)
+        if selected is None:
+            self.selected_note.hide()
+        else:
+            self.selected_note.setRegion((selected.start / self.sr, selected.end / self.sr))
+            self.selected_note.show()
+
+    def _on_pitch_click(self, ev) -> None:  # noqa: ANN001 - pyqtgraph signature
+        view = self.pitch_plot.plotItem.vb
+        if ev.button() != Qt.MouseButton.LeftButton or not view.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        self.pitch_clicked.emit(int(max(0.0, view.mapSceneToView(ev.scenePos()).x()) * self.sr))
 
     # ----- regions ----------------------------------------------------------
     def _on_select(self, x0: float, x1: float, additive: bool) -> None:

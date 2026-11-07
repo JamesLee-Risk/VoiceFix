@@ -33,6 +33,7 @@ from voicefix.core.regions import Region, merge_regions
 from voicefix.steps.base import Analysis, Event, Step
 from voicefix.ui.audition import AuditionController
 from voicefix.ui.controls import EventList, StepControls
+from voicefix.ui.note_targets import NoteTargetEditor
 from voicefix.ui.panels import EditPanel, ExportPanel, ImportPanel, PitchPanel
 from voicefix.ui.session import Session
 from voicefix.ui.start_dialog import AUDIO_FILTER
@@ -64,6 +65,9 @@ class MainWindow(QMainWindow):
         self.resize(1440, 860)
         self._build_ui()
         self.audition = AuditionController(session.sr, self.waveform, self.transport, self.runner)
+        self.note_targets = NoteTargetEditor(
+            self.pitch_panel, self.waveform, session.sr, lambda region: self.session.to_source(self.index, region)
+        )
         self._others = None  # flow C: the other tracks' input to this step, summed
         self.audition.error.connect(self.show_error)
         self.audition.busy.connect(lambda busy: self.statusBar().showMessage("試聽計算中…" if busy else "", 0))
@@ -166,6 +170,8 @@ class MainWindow(QMainWindow):
         self.import_panel.clear_accompaniment.connect(lambda: self._set_accompaniment(None))
         self.import_panel.key_changed.connect(self._set_key)
         self.pitch_panel.key_changed.connect(self._set_pitch_key)
+        self.note_targets.changed.connect(self._targets_changed)
+        self.note_targets.seek.connect(self.audition.seek)
         self.edit_panel.edit_requested.connect(self._add_edit)
         self.edit_panel.remove_requested.connect(self._remove_edit)
         self.export_panel.export_requested.connect(self._export)
@@ -231,6 +237,7 @@ class MainWindow(QMainWindow):
             self.step_settings["key"] = self.project.config(0).settings.get("key", "auto")
         self.events = []
         self._user_disabled = tuple(config.disabled_events)  # source positions the user unticked
+        self.note_targets.load(dict(config.note_targets))
         self._last_analysis = None
         self._input_ready = False
         self._set_editing(False)  # the waveform still shows the previous step's timeline
@@ -341,6 +348,8 @@ class MainWindow(QMainWindow):
         if "pitch" in analysis.data:
             track = analysis.data["pitch"]
             self.waveform.set_pitch(track.cents, track.frame)
+        if "notes" in analysis.data:
+            self.note_targets.set_notes(analysis.data["notes"])
         if self.step.panel in ("import", "pitch"):
             self._refresh_panels()  # shows the detected key
         if self.step.panel == "import" and self.project.noise_sample is None and analysis.data.get("noise_sample"):
@@ -367,7 +376,11 @@ class MainWindow(QMainWindow):
         base = self.controls.draft
         selections = tuple(self.session.to_source(self.index, r) for r in self.waveform.selections())
         return replace(
-            base, selections=selections, disabled_events=self._user_disabled, settings=dict(self.step_settings)
+            base,
+            selections=selections,
+            disabled_events=self._user_disabled,
+            settings=dict(self.step_settings),
+            note_targets=self.note_targets.targets(),
         )
 
     def _preview_fn(self):
@@ -418,6 +431,8 @@ class MainWindow(QMainWindow):
     def _jump_to_event(self, row: int) -> None:
         if 0 <= row < len(self.events):
             region = self.events[row].region
+            if self.step.panel == "pitch":
+                self.note_targets.select_at(region.start + 1, seek=False)
             self.waveform.zoom_to(region)
             self.audition.seek(max(0, region.start - int(0.5 * self.session.sr)))
 
@@ -617,6 +632,12 @@ class MainWindow(QMainWindow):
         """Unlinking keeps the current values; re-linking takes the shared ones back."""
         self.session.set_linked(self.step.id, not own)
         self.enter_step(self.index)
+
+    def _targets_changed(self) -> None:
+        """B6 / C6: a note's target was changed by hand."""
+        self._start_analysis()  # redraws the targets
+        self._detect_events()
+        self._replan()
 
     def _set_harmony_gain(self, gain_db: float) -> None:
         if self.session.is_multitrack:

@@ -63,6 +63,7 @@ class StepConfig:
     scope: ScopeMode = ScopeMode.WHOLE
     selections: tuple[Region, ...] = ()
     disabled_events: tuple[int, ...] = ()  # source-timeline start samples
+    note_targets: tuple[tuple[int, int], ...] = ()  # (source-timeline note start, target cents), B6 / C6
     advanced: Mapping[str, float] = field(default_factory=dict)
     settings: Mapping[str, Any] = field(default_factory=dict)  # step-specific, JSON-safe
     status: StepStatus = StepStatus.NOT_STARTED
@@ -80,6 +81,7 @@ class StepConfig:
             "scope": self.scope.value,
             "selections": [r.to_json() for r in self.selections],
             "disabled_events": list(self.disabled_events),
+            "note_targets": [list(t) for t in self.note_targets],
             "advanced": dict(sorted(self.advanced.items())),
             "settings": _sorted_json(self.settings),
             "status": self.status.value,
@@ -93,6 +95,7 @@ class StepConfig:
             scope=ScopeMode(data.get("scope", ScopeMode.WHOLE.value)),
             selections=tuple(Region.from_json(r) for r in data.get("selections", [])),
             disabled_events=tuple(int(x) for x in data.get("disabled_events", [])),
+            note_targets=tuple((int(p), int(c)) for p, c in data.get("note_targets", [])),
             advanced={k: float(v) for k, v in data.get("advanced", {}).items()},
             settings=dict(data.get("settings", {})),
             status=StepStatus(data.get("status", StepStatus.NOT_STARTED.value)),

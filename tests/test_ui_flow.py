@@ -276,3 +276,62 @@ def test_walk_flow_c_switch_tracks_and_export(app, multitrack_window, tmp_path: 
     assert (tmp_path / "final_mix.wav").exists()
     assert all(win.session.multi.project(t).status(i) == StepStatus.APPLIED for t in range(2) for i in range(12))
     assert win.errors == []
+
+
+def test_pick_target_for_far_off_note_on_pitch_plot(app, tmp_path: Path, monkeypatch):
+    from tests.test_pitch import sung
+    from voicefix.dsp import pitch
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(a[2]))
+    src = tmp_path / "v.wav"
+    sf.write(src, sung([(6400 + 80, 0.9), (7200, 0.9)]), SR)  # E4 sung 80 cents sharp
+    session = Session.create(Flow.SINGING, src, tmp_path / "v.voicefix", tmp_path / "cache")
+    win = MainWindow(session)
+    settle(app)
+    win._set_key("C 大調")
+    while win.step.code != "B6":
+        win._skip()
+        settle(app)
+    assert win.events == []  # looks like an in-tune F4
+    first = pitch.segment_notes(pitch.track_pitch(np.array(win.chain.render(win.project, win.index - 1)), SR))[0]
+    win.waveform.pitch_clicked.emit(first.region.start + SR // 10)  # click the note on the pitch plot
+    assert "F4" in win.pitch_panel.note_label.text() and win.pitch_panel.down.isEnabled()
+    win.pitch_panel.down.click()  # it should be E4
+    settle(app)
+    assert "E4" in win.pitch_panel.note_label.text() and "你指定的" in win.pitch_panel.note_label.text()
+    assert len(win.events) == 1 and "手動" in win.events[0].label
+    win.controls.slider.setValue(100)
+    win._apply()
+    settle(app)
+    b6 = win.index - 1
+    assert win.project.config(b6).note_targets
+    fixed = pitch.segment_notes(pitch.track_pitch(np.array(win.chain.render(win.project, b6)), SR))
+    assert fixed[0].cents == pytest.approx(6400, abs=8)
+    win.close()
+    settle(app)
+
+
+def test_quick_presses_add_up_and_return_to_auto(app, tmp_path: Path, monkeypatch):
+    from tests.test_pitch import sung
+    from voicefix.dsp import pitch
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(a[2]))
+    src = tmp_path / "v.wav"
+    sf.write(src, sung([(6400 + 80, 0.9), (7200, 0.9)]), SR)
+    win = MainWindow(Session.create(Flow.SINGING, src, tmp_path / "v.voicefix", tmp_path / "cache"))
+    settle(app)
+    win._set_key("C 大調")
+    while win.step.code != "B6":
+        win._skip()
+        settle(app)
+    first = pitch.segment_notes(pitch.track_pitch(np.array(win.chain.render(win.project, win.index - 1)), SR))[0]
+    win.waveform.pitch_clicked.emit(first.region.start + SR // 10)
+    win.pitch_panel.down.click()
+    win.pitch_panel.down.click()  # before the re-analysis comes back
+    assert list(win.note_targets.targets()) == [(win.note_targets.targets()[0][0], 6300)]  # F4 -> E4 -> Eb4
+    win.pitch_panel.up.click()
+    win.pitch_panel.up.click()  # back to F4, which is the automatic target
+    settle(app)
+    assert win.note_targets.targets() == ()
+    win.close()
+    settle(app)

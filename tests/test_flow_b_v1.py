@@ -160,3 +160,72 @@ def test_effect_preview_equals_full_render(make_session):
     preview = chain.preview(project, i, cfg, span)
     full = chain.render(project.apply_step(i, cfg), i)
     assert np.array_equal(preview.after, full[span.start : span.end])
+
+
+@pytest.fixture
+def way_off(make_session):
+    # E4 sung 80 cents sharp: nearer to F4, so it looks like an in-tune F4
+    return make_session(sung([(6400 + 80, 0.9), (7200, 0.9)]), flow=Flow.SINGING)
+
+
+def test_far_off_note_is_mistaken_for_its_neighbour(way_off):
+    project, chain = way_off
+    i = index_of(chain, "B6")
+    assert chain.events(project, i, StepConfig(settings=C_MAJOR)) == []
+    notes = chain.analyze(project, i, config=StepConfig(settings=C_MAJOR)).data["notes"]
+    assert note_name_of(notes[0]["target"]) == "F4" and not notes[0]["manual"]
+
+
+def note_name_of(cents: float) -> str:
+    from voicefix.dsp.key import note_name
+
+    return note_name(cents)
+
+
+def test_hand_picked_target_fixes_a_far_off_note(way_off):
+    project, chain = way_off
+    i = index_of(chain, "B6")
+    first = pitch.segment_notes(pitch.track_pitch(np.array(chain.render(project, i - 1)), SR))[0]
+    cfg = StepConfig(strength=100, settings=C_MAJOR, note_targets=((first.region.start, 6400),))
+    events = chain.events(project, i, cfg)
+    assert len(events) == 1 and events[0].label.startswith("偏高 80") and "E4，手動" in events[0].label
+    got = note_cents(chain.render(project.apply_step(i, cfg), i))
+    assert got[0] == pytest.approx(6400, abs=8)
+    assert got[1] == pytest.approx(7200, abs=6)
+
+
+def test_note_targets_saved_and_per_track(tmp_path):
+    import soundfile as sf
+
+    from voicefix.core.project import load_project, save_project
+    from voicefix.ui.multisession import MultiSession
+
+    steps_project = Project.new(Flow.SINGING, "x.wav", [s.id for s in build_steps(Flow.SINGING)])
+    cfg = StepConfig(note_targets=((48_000, 6400),))
+    steps_project = steps_project.with_config(5, cfg)
+    save_project(steps_project, tmp_path / "p.voicefix")
+    assert load_project(tmp_path / "p.voicefix").config(5).note_targets == ((48_000, 6400),)
+
+    paths = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    for p in paths:
+        sf.write(p, sung([(6400, 0.5)]), SR)
+    session = MultiSession.create(["主唱", "和聲"], paths, tmp_path / "c.voicefix", tmp_path / "cache")
+    c6 = next(i for i, s in enumerate(session.steps) if s.code == "C6")
+    session.update(session.project.with_config(c6, replace(session.project.config(c6), note_targets=((100, 6500),))))
+    assert session.multi.project(1).config(c6).note_targets == ()
+
+
+def test_target_too_far_from_the_sung_note_is_ignored(way_off):
+    project, chain = way_off
+    i = index_of(chain, "B6")
+    first = pitch.segment_notes(pitch.track_pitch(np.array(chain.render(project, i - 1)), SR))[0]
+    cfg = StepConfig(strength=100, settings=C_MAJOR, note_targets=((first.region.start, 6480 - 1200),))  # an octave
+    assert chain.events(project, i, cfg) == []
+
+
+def test_nearest_target_wins_for_close_notes():
+    from voicefix.steps.base import StepContext
+
+    ctx = StepContext(SR, 10 * SR, (), (), None, False, (), {}, note_targets=((1000, 6400), (2400, 6500)))
+    assert ctx.target_for(Region(2000, 3000)) == 6500  # 400 samples from the second, 1000 from the first
+    assert ctx.target_for(Region(1100, 2000)) == 6400

@@ -20,6 +20,8 @@ Params = Mapping[str, float]
 
 GENERAL_SCOPES = (ScopeMode.WHOLE, ScopeMode.SELECTION, ScopeMode.EXCLUDE_SELECTION)
 EVENT_MATCH_SECONDS = 0.002
+NOTE_MATCH_SECONDS = 0.03  # a note's start may move this much when earlier steps change
+MAX_NOTE_TARGET_CENTS = 350  # a hand-picked target may be at most ~3 semitones from what was sung
 
 
 @dataclass(frozen=True)
@@ -76,12 +78,21 @@ class StepContext:
     accompaniment_key: Optional[str] = None
     accompaniment_loader: Optional[Callable[[], np.ndarray]] = None
     is_lead: bool = True  # flow C: False on harmony / double tracks
+    note_targets: tuple[tuple[int, int], ...] = ()  # (note start, target cents) chosen by hand
 
     def reference(self) -> Optional[np.ndarray]:
         return self.reference_loader() if self.reference_loader else None
 
     def accompaniment(self) -> Optional[np.ndarray]:
         return self.accompaniment_loader() if self.accompaniment_loader else None
+
+    def target_for(self, note: Region) -> Optional[int]:
+        """The hand-picked target (cents) of the note starting at ``note.start``, if any."""
+        tolerance = int(self.sr * NOTE_MATCH_SECONDS)
+        nearest = min(self.note_targets, key=lambda t: abs(note.start - t[0]), default=None)
+        if nearest is None or abs(note.start - nearest[0]) > tolerance:
+            return None
+        return nearest[1]
 
     def is_disabled(self, event: Region) -> bool:
         tolerance = int(self.sr * EVENT_MATCH_SECONDS)
